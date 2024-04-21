@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import math
 from typing import NamedTuple
+from collections import deque, namedtuple
 
 import mediapipe as mp
 
@@ -31,8 +32,28 @@ hand_keypoints = {
     19: "PINKY_DIP",
     20: "PINKY_TIP",
 }
+CURRENT_FRAME_WEIGHT = 0.75
+def smooth_landmarks(list_of_hands: list[NamedTuple]):
+    """ Returns a Hand Object with landmarks calculated with a weighted moving average"""
+    list_of_hands = [hand for hand in list_of_hands if hand is not None]
+    if len(list_of_hands) == 1:
+        return list_of_hands[0]
+    list_of_hand_landmarks = [hand.landmark for hand in list_of_hands]
+    list_of_landmarks = []
+    for landmark in zip(*list_of_hand_landmarks):
+        number_of_datapoints = len(landmark)
+        previous_frame_weight = (1-CURRENT_FRAME_WEIGHT)/(number_of_datapoints - 1)
+        average_x = previous_frame_weight * sum(point.x for point in landmark[:-1])
+        average_y = previous_frame_weight * sum(point.y for point in landmark[:-1])
+        average_x += CURRENT_FRAME_WEIGHT * landmark[-1].x
+        average_y += CURRENT_FRAME_WEIGHT * landmark[-1].y
+        Point = namedtuple('Point', ['x', 'y'])
+        list_of_landmarks.append(Point(average_x, average_y))
 
-
+    Hand = namedtuple('Hand', ['landmark'])
+    hand = Hand(list_of_landmarks)
+    return hand
+    
 def hand_distance(hand_1: NamedTuple, hand_2: NamedTuple) -> float:
     """Given two hand objects, returns the sum of the distance between all the
     landmarks"""
@@ -78,29 +99,32 @@ def get_hand(previous_hand: NamedTuple, all_hands: list):
 
     return hand
 
-def process_frame(frame: np.ndarray, previous_hand: NamedTuple):
+def process_frame(frame: np.ndarray, previous_hands: NamedTuple):
     output_hands = capture_hands.process(frame)
     all_hands = output_hands.multi_hand_landmarks
     is_hand_inframe = False
+    previous_hand = previous_hands[-1]
     if all_hands:
         hand = get_hand(previous_hand, all_hands)
         is_hand_inframe = True
 
     if not is_hand_inframe:
         cv2.imshow("", frame)
-        return None
-
-    drawing_option.draw_landmarks(frame, hand)
+        return [None]
+    hand = smooth_landmarks(previous_hands + [hand])
+    #drawing_option.draw_landmarks(frame, hand)
     frame = circle_tips(frame, hand)
 
     cv2.imshow("", frame)
-    # print('hand',hand)
-    return hand
+    previous_hands.append(hand)
+    if len(previous_hands) > 10:
+        previous_hands.pop(0)
+    return previous_hands
 
 
 def main():
     cap = cv2.VideoCapture(0)
-    previous_hand = None
+    previous_hand = [None]
     while True:
         ret, frame = cap.read()
         if ret:
